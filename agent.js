@@ -1,16 +1,15 @@
 const Groq = require("groq-sdk");
 
 // ─── Config ─────────────────────────────────────────────────────────────────
-const LEAGUE_ID = 1;        // FIFA World Cup, per API-Football
-const SEASON = 2026;        // 2026 edition (USA / Canada / Mexico)
 const TIMEZONE = "Africa/Johannesburg";
-const API_BASE = "https://v3.football.api-sports.io";
+// Free, public, no API key, no rate limit — a static JSON file maintained by
+// the openfootball project. Updated roughly once a day by a volunteer, but
+// has been fully current for every match so far in this tournament.
+const DATA_URL =
+  "https://raw.githubusercontent.com/openfootball/worldcup.json/master/2026/worldcup.json";
 
-const FOOTBALL_API_KEY = process.env.FOOTBALL_API_KEY;
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const TEAMS_WEBHOOK_URL = process.env.TEAMS_WEBHOOK_URL;
-
-const FINISHED_STATUSES = new Set(["FT", "AET", "PEN"]);
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -28,24 +27,37 @@ function localTimeString(date, timeZone = TIMEZONE) {
   }).format(date);
 }
 
-// ─── Fetch fixtures from API-Football ──────────────────────────────────────
-async function fetchFixtures(fromDate, toDate) {
-  const url = `${API_BASE}/fixtures?league=${LEAGUE_ID}&season=${SEASON}&from=${fromDate}&to=${toDate}`;
-  const res = await fetch(url, {
-    headers: { "x-apisports-key": FOOTBALL_API_KEY },
-  });
+// The data source stores kickoff as e.g. "13:00 UTC-6" alongside a separate
+// "date" field (the host city's local kickoff time + that city's UTC offset).
+// This combines them into one real instant we can convert to any timezone.
+function parseKickoff(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+  const m = timeStr.match(/^(\d{1,2}):(\d{2})\s*UTC([+-]\d+)$/i);
+  if (!m) return null;
+  const [, hh, mm, offset] = m;
+  const offsetNum = parseInt(offset, 10);
+  const sign = offsetNum >= 0 ? "+" : "-";
+  const offsetAbs = String(Math.abs(offsetNum)).padStart(2, "0");
+  const iso = `${dateStr}T${hh.padStart(2, "0")}:${mm}:00${sign}${offsetAbs}:00`;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
+}
 
+function formatScore(home, away, score) {
+  if (!score || !score.ft) return null;
+  const [hFt, aFt] = score.ft;
+  const pen = score.p ? ` (${score.p[0]}-${score.p[1]} pens)` : "";
+  return `${home} ${hFt} - ${aFt} ${away}${pen}`;
+}
+
+// ─── Fetch fixtures ─────────────────────────────────────────────────────────
+async function fetchMatches() {
+  const res = await fetch(DATA_URL);
   if (!res.ok) {
-    throw new Error(`API-Football request failed: ${res.status} ${res.statusText}`);
+    throw new Error(`Failed to fetch World Cup data: ${res.status} ${res.statusText}`);
   }
-
   const data = await res.json();
-
-  if (data.errors && Object.keys(data.errors).length > 0) {
-    throw new Error(`API-Football returned errors: ${JSON.stringify(data.errors)}`);
-  }
-
-  return data.response || [];
+  return data.matches || [];
 }
 
 // ─── Build digest ───────────────────────────────────────────────────────────
@@ -54,36 +66,38 @@ async function buildDigest() {
   const todayStr = localDateString(now);
   const yesterdayStr = localDateString(new Date(now.getTime() - 24 * 60 * 60 * 1000));
 
-  // API-Football's from/to filter is date-based; fetching a 2-day window and
-  // then re-bucketing by local (SAST) calendar date keeps results accurate
-  // even for matches close to the UTC day boundary.
-  const fixtures = await fetchFixtures(yesterdayStr, todayStr);
+  const matches = await fetchMatches();
 
   const resultsYesterday = [];
   const fixturesToday = [];
+  let pendingResults = 0;
 
-  for (const f of fixtures) {
-    const kickoff = new Date(f.fixture.date);
+  for (const m of matches) {
+    const kickoff = parseKickoff(m.date, m.time);
+    if (!kickoff) continue; // skip entries with an undetermined kickoff (e.g. far-future knockout slots)
     const localDay = localDateString(kickoff);
-    const home = f.teams.home.name;
-    const away = f.teams.away.name;
-    const round = f.league.round || "";
+    const round = m.round || "";
 
-    if (localDay === yesterdayStr && FINISHED_STATUSES.has(f.fixture.status.short)) {
-      resultsYesterday.push(
-        `${home} ${f.goals.home} - ${f.goals.away} ${away} (${round})`
-      );
+    if (localDay === yesterdayStr) {
+      const line = formatScore(m.team1, m.team2, m.score);
+      if (line) {
+        resultsYesterday.push(`${line} (${round})`);
+      } else {
+        pendingResults++; // match happened yesterday SAST but no score in the data yet
+      }
     } else if (localDay === todayStr) {
-      const time = localTimeString(kickoff);
-      const venue = f.fixture.venue?.city ? `, ${f.fixture.venue.city}` : "";
-      const status = FINISHED_STATUSES.has(f.fixture.status.short)
-        ? `FT ${f.goals.home}-${f.goals.away}`
-        : `${time} SAST`;
-      fixturesToday.push(`${status} - ${home} vs ${away} (${round}${venue})`);
+      const finished = formatScore(m.team1, m.team2, m.score);
+      const ground = m.ground ? `, ${m.ground}` : "";
+      if (finished) {
+        fixturesToday.push(`FT - ${finished} (${round}${ground})`);
+      } else {
+        const time = localTimeString(kickoff);
+        fixturesToday.push(`${time} SAST - ${m.team1} vs ${m.team2} (${round}${ground})`);
+      }
     }
   }
 
-  if (resultsYesterday.length === 0 && fixturesToday.length === 0) {
+  if (resultsYesterday.length === 0 && fixturesToday.length === 0 && pendingResults === 0) {
     console.log("No World Cup matches yesterday or today — skipping Teams post.");
     return null;
   }
@@ -125,7 +139,14 @@ ${fixturesToday.length ? fixturesToday.join("\n") : "(none)"}
     ],
   });
 
-  return completion.choices[0].message.content;
+  let digest = completion.choices[0].message.content;
+
+  if (pendingResults > 0) {
+    digest += `\n\n_Note: ${pendingResults} match${pendingResults > 1 ? "es" : ""} from yesterday ` +
+      `hadn't had a result entered in the data source yet at post time — check back later._`;
+  }
+
+  return digest;
 }
 
 // ─── Post to Teams ──────────────────────────────────────────────────────────
@@ -155,7 +176,6 @@ async function postToTeams(text) {
 // ─── Main ───────────────────────────────────────────────────────────────────
 (async () => {
   try {
-    if (!FOOTBALL_API_KEY) throw new Error("Missing FOOTBALL_API_KEY env var");
     if (!GROQ_API_KEY) throw new Error("Missing GROQ_API_KEY env var");
     if (!TEAMS_WEBHOOK_URL) throw new Error("Missing TEAMS_WEBHOOK_URL env var");
 
@@ -168,3 +188,4 @@ async function postToTeams(text) {
     process.exit(1);
   }
 })();
+

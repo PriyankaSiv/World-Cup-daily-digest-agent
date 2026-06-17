@@ -8,26 +8,35 @@ The 2026 World Cup runs June 11 – July 19, 2026 across the US, Canada and Mexi
 This agent will simply post nothing on days with no matches (e.g. before/after the
 tournament, or rest days between rounds).
 
-## 1. Get a free API-Football key
+Match data comes from [openfootball/worldcup.json](https://github.com/openfootball/worldcup.json) —
+a free, public, no-key-required JSON file (an earlier version of this agent used
+API-Football, but its free tier turned out not to cover the current season at all).
+There's no signup step for this one — `agent.js` just fetches it directly.
 
-1. Go to https://dashboard.api-football.com/register and sign up (no credit card
-   needed for the free plan).
-2. In the dashboard, copy your API key.
-3. Free plan = 100 requests/day, 10/minute — this agent uses 1 request per run,
-   so you're nowhere close to the limit.
-
-## 2. Get a Groq key (skip if reusing the one from the tech news agent)
+## 1. Get a Groq key (skip if reusing the one from the tech news agent)
 
 1. console.groq.com → API Keys → Create API Key.
 2. Set expiry to "No expiration" if offered, so you don't have to rotate it.
 
-## 3. Get a Teams webhook URL
+## 2. Get a Teams webhook URL
 
-Reuse the same Incoming Webhook from the tech news agent if you want both digests
-in one channel, or create a new one (Teams channel → ⋯ → Connectors/Workflows →
-Incoming Webhook) if you'd rather keep World Cup updates separate.
+Microsoft retired the old "Connectors → Incoming Webhook" path in May 2026, so
+use the **Workflows** app instead:
 
-## 4. Push this repo to GitHub
+1. Go to the channel → three dots (⋯) → **Workflows**.
+2. Search for the template **"Post to a channel when a webhook request is
+   received"**.
+3. Pick the Team and Channel → **Create flow**.
+4. Copy the URL it generates.
+
+This still accepts the same MessageCard JSON format `agent.js` already sends,
+so no code changes needed — just the URL. Reuse the tech news agent's webhook
+if you want both digests in one channel, or create a separate one to keep
+World Cup updates in their own channel. (If the news agent's webhook was set
+up via the old Connectors menu, double check it's still posting — it may need
+this same migration.)
+
+## 3. Push this repo to GitHub
 
 ```bash
 git init
@@ -38,18 +47,17 @@ git remote add origin <your-empty-github-repo-url>
 git push -u origin main
 ```
 
-## 5. Add your secrets
+## 4. Add your secrets
 
 In the repo: **Settings → Secrets and variables → Actions → New repository secret**.
-Add all three:
+Add both:
 
 | Secret name | Value |
 |---|---|
-| `FOOTBALL_API_KEY` | from API-Football dashboard |
 | `GROQ_API_KEY` | from console.groq.com |
 | `TEAMS_WEBHOOK_URL` | your Teams incoming webhook URL |
 
-## 6. Test it
+## 5. Test it
 
 Go to the **Actions** tab → **World Cup Daily Digest** → **Run workflow** to fire
 it manually. Check your Teams channel for the message.
@@ -57,18 +65,21 @@ it manually. Check your Teams channel for the message.
 Once that works, it'll run automatically every morning at 07:30 SAST (no laptop,
 no login required — same as the news agent).
 
-## 7. After the tournament
+## 6. After the tournament
 
 The final is July 19, 2026. After that you can either delete the repo, or just
 leave it — it'll keep running for free but post nothing once there's no World Cup
-data left for `season=2026`. To stop it without deleting anything: **Settings →
-Actions → General → Disable Actions** for this repo.
+data left. To stop it without deleting anything: **Settings → Actions → General →
+Disable Actions** for this repo.
 
 ## Notes / things you may want to tweak
 
-- `agent.js` only reports **finished** matches as "yesterday's results" (status
-  `FT`/`AET`/`PEN`). Matches still in progress at run time won't show a score.
+- The data source is updated by a volunteer roughly once a day rather than truly
+  live. In practice it's been fully current for every match so far this
+  tournament, but if a result is genuinely missing when the agent runs, it'll
+  add a one-line note to the digest rather than silently dropping it.
 - Times are converted to SAST (Africa/Johannesburg) throughout.
-- Want a specific team highlighted (e.g. a "How are the Boks... er, Bafana Bafana
-  doing" line)? That's an easy add — just filter fixtures by team name/ID and
-  mention it in the Groq prompt.
+- South Africa is actually in this World Cup (Group A, with Mexico, South Korea
+  and Czech Republic) — want a "how are Bafana Bafana doing" line front and
+  center? Easy add: filter for matches involving "South Africa" and mention it
+  explicitly in the Groq prompt.
