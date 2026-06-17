@@ -1,0 +1,12 @@
+{
+  "name": "worldcup-digest-agent",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "description": "Daily FIFA World Cup 2026 results + fixtures digest, posted to Microsoft Teams",
+  "scripts": {
+    "start": "node agent.js"
+  },
+  "dependencies": {
+    "groq-sdk": "^0.9.0"
+  }
+}

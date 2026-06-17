@@ -1,0 +1,26 @@
+name: World Cup Daily Digest
+
+on:
+  schedule:
+    # 05:30 UTC = 07:30 SAST. Scheduled 30 min early since GitHub Actions
+    # cron jobs can run 5-20+ minutes late during busy periods.
+    - cron: "30 5 * * *"
+  workflow_dispatch: {}   # lets you trigger a run manually from the Actions tab
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: npm install
+
+      - run: node agent.js
+        env:
+          FOOTBALL_API_KEY: ${{ secrets.FOOTBALL_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
